@@ -36,7 +36,8 @@ export default function App() {
         <Outlet />
         <ScrollRestoration />
         <Scripts />
-      </body>
+              <script src="https://app.glueview.com/widget.js" data-key="pk_dev_e07672fae8c896ca099a10104b51e4ba331339fef7a27018" async></script>
+  </body>
     </html>
   );
 }
