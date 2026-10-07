@@ -1,0 +1,20 @@
+{
+  "app_id": "84c06bf6-1b7b-4135-aa07-4919bacb2502",
+  "checkin_minutes": 5,
+  "operations": [
+    "health"
+  ],
+  "jobs": [],
+  "queues": [],
+  "dependencies": [
+    {
+      "name": "Supabase",
+      "url_env": [
+        "SUPABASE_URL",
+        "NEXT_PUBLIC_SUPABASE_URL",
+        "VITE_SUPABASE_URL"
+      ],
+      "path": "/auth/v1/health"
+    }
+  ]
+}
