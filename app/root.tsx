@@ -28,6 +28,8 @@ export default function App() {
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
+        {/* Continual: Netlify adds a note to the top of this page and React trips on it. This removes the note before React starts. */}
+        <script data-continual-fix="netlify-head-comment" dangerouslySetInnerHTML={{ __html: "(function(){var h=document.head,n=h&&h.firstChild,x;while(n){x=n.nextSibling;if(n.nodeType===3?!/\\S/.test(n.nodeValue):n.nodeType===8&&/netlify/i.test(n.nodeValue))h.removeChild(n);n=x}})()" }} />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <Meta />
         <Links />
