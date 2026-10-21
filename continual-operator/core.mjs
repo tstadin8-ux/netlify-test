@@ -62,10 +62,31 @@
 // Further off, Continual answers with how far (`clock_off_s`, a number), and the module says so in one log line of its
 // own words — never text from the answer.
 //
+// WHICH COPY THIS IS (1.4.3, the menu's security review, M-2). A signed check-in says which deployment sent it: the host
+// this copy served most since its last check-in (`host`; never simply the newest request's, which anyone could forge)
+// and the word the host itself sets for the deployment (`env`: CONTINUAL_ENVIRONMENT,
+// else VERCEL_ENV, Netlify's deploy context, RAILWAY_ENVIRONMENT_NAME …, see environmentOf). Continual hands the menu
+// only to the production copy, so a preview, staging or a laptop holding the same key is handed nothing on the menu. The
+// key holder is trusted either way: this keeps copies from being mistaken for each other, it adds no secret.
+//
+// A COPY THAT HAS JUST STARTED (1.4.3, M-3). Each copy holds its own page and mode, learned at its check-in. A write that
+// arrives before this copy's first check-in has finished waits for it (`gate`, `ready`), READY_MS at most, so a copy
+// that starts while read-only mode is on refuses that write too; a read never waits. If Continual can't be reached in
+// that time, the write goes on: an unreachable Continual never stops the app. The helpers whose callers can wait use it
+// (express.mjs, node.mjs, and continualGateReady in the edge helpers); the one-line `continualGate` in an app's own
+// function cannot wait, so read-only holds there from the copy's first check-in on.
+//
 // Every runtime this targets has Web Crypto, atob, btoa, TextEncoder and fetch (Node 18+, Deno, Cloudflare, Netlify,
-// Vercel), so this file imports nothing.
+// Vercel), so this file imports nothing. Web Crypto is handed in where a runtime keeps it off the global object: Node
+// 18 sets no `globalThis.crypto` for a script (only `node -e` shows one), so node.mjs and express.mjs pass Node's own
+// (`webcrypto` from node:crypto) as `subtle` and `getRandomValues` (1.4.2). Until 1.4.2 a Node 18 server built the
+// module with no `subtle`, and tick() returned at its first line: no check-in, and no line saying why.
+//
+// NEVER SILENT (1.4.2). Each reason this copy will not check in at all is said in one quiet line, once per copy: switched
+// off, no app id, no key, no fetch, no Web Crypto. Inside the window between check-ins nothing is said: that is the
+// window working. A check-in that fails says its one word (`check-in skipped (…)`), as before.
 
-export const MODULE_VERSION = '1.2.0'; // 1.2.0 (7 Oct 2026): adapters/node.mjs, for a plain Node server
+export const MODULE_VERSION = '1.4.3'; // 1.4.3 (8 Oct 2026): the menu's security review — a check-in says which deployment it is (deploy); a write waits for a new copy's first check-in (gate, ready); hooks and checks by their own names only · 1.4.2 (8 Oct 2026): Node 18 — the Node helpers hand in node:crypto's Web Crypto; every reason not to check in is said · 1.4.1 (8 Oct 2026): adapters/supabase-gate.ts, continualGate beside a supabase.ts merged before 1.4.0 · 1.4.0 (8 Oct 2026): supabase.ts continualGate, with-continual.mjs, and types for a TypeScript middleware or Worker · 1.3.0 (7 Oct 2026): adapters/express.cjs and node.cjs, a TypeScript server's line on every Node
 export const INSTRUCTION_TYPE = 'continual-instruction';
 export const MAX_LIFE_S = 300; // an instruction lives five minutes at most
 export const LEEWAY_S = 300; // clocks may disagree by up to five minutes: the window Continual takes a signed check-in in
@@ -90,6 +111,14 @@ const VERSION = /^[A-Za-z0-9._+-]{1,64}$/;
 // any other variable.
 export const VERSION_ENVS = ['CONTINUAL_VERSION', 'VERCEL_GIT_COMMIT_SHA', 'COMMIT_REF', 'CF_PAGES_COMMIT_SHA', 'RENDER_GIT_COMMIT',
   'RAILWAY_GIT_COMMIT_SHA', 'SOURCE_VERSION', 'HEROKU_SLUG_COMMIT', 'GIT_COMMIT', 'GITHUB_SHA'];
+// The variables hosts set to say which deployment is running (1.4.3), in the order they are read: the owner's own word
+// first. Fixed, like VERSION_ENVS. Render says a pull request's preview with IS_PULL_REQUEST; NODE_ENV counts only when
+// it says development or test (a preview on Vercel runs with NODE_ENV=production too).
+export const ENVIRONMENT_ENVS = ['CONTINUAL_ENVIRONMENT', 'VERCEL_ENV', 'CONTEXT', 'RAILWAY_ENVIRONMENT_NAME', 'RAILWAY_ENVIRONMENT', 'IS_PULL_REQUEST', 'NODE_ENV'];
+const ENV_WORD = /^[a-z0-9][a-z0-9_.-]{0,31}$/;
+const HOST_NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+export const READY_MS = CALL_TIMEOUT_MS + 500; // the longest a write waits on a new copy's first check-in (1.4.3): the call's three seconds, and a little
+export const HOSTS_KEPT = 8; // hosts a copy counts between check-ins, to name the one it served most (1.4.3)
 // The default port for a database address that names none.
 const PORTS = { postgres: 5432, postgresql: 5432, mysql: 3306, mariadb: 3306, redis: 6379, rediss: 6379, mongodb: 27017, sqlserver: 1433 };
 const WRITES = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -317,6 +346,41 @@ export function versionOf(env) {
   return v && VERSION.test(v.trim()) ? v.trim() : null;
 }
 
+/**
+ * Which deployment this copy is, in the host's own word (1.4.3): CONTINUAL_ENVIRONMENT, else the word the helper read
+ * from the platform's request context (`said`, Netlify's deploy context), else the first of ENVIRONMENT_ENVS that is
+ * set — lower case, such as "production", "preview" or "staging". Null when nothing says.
+ */
+export function environmentOf(env, said = null) {
+  const word = (v) => { const w = typeof v === 'string' ? v.trim().toLowerCase() : ''; return ENV_WORD.test(w) ? w : null; };
+  const own = word(env('CONTINUAL_ENVIRONMENT'));
+  if (own) return own;
+  if (word(said)) return word(said);
+  for (const name of ['VERCEL_ENV', 'CONTEXT', 'RAILWAY_ENVIRONMENT_NAME', 'RAILWAY_ENVIRONMENT']) { const w = word(env(name)); if (w) return w; }
+  if (word(env('IS_PULL_REQUEST')) === 'true') return 'preview';
+  const node = word(env('NODE_ENV'));
+  return node === 'development' || node === 'test' ? node : null;
+}
+
+/** The host a request named (a Host header, or a URL), lower case and without its port; null for anything else. */
+export function hostOf(raw) {
+  let h = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(h)) { try { h = new URL(h).host; } catch { return null; } } // not a URL: no host
+  if (/^\[[0-9a-f:.]+\](:\d{1,5})?$/.test(h)) return h.replace(/:\d{1,5}$/, '');
+  h = h.replace(/:\d{1,5}$/, '').replace(/\.$/, '');
+  return h.length <= 253 && HOST_NAME.test(h) ? h : null;
+}
+
+/** The host a request names (1.4.3): a fetch Request's URL, else its Host header — a Node request's `headers.host`. */
+export function requestHost(request) {
+  if (typeof request?.url === 'string' && /^[a-z][a-z0-9+.-]*:\/\//i.test(request.url)) return hostOf(request.url);
+  const h = request?.headers;
+  return hostOf(typeof h?.get === 'function' ? h.get('host') : h?.host);
+}
+
+/** A value an object holds under exactly this name, never one it inherits (security review, L-4: `constructor`, `toString`). */
+const ownOf = (o, name) => (o && typeof o === 'object' && Object.hasOwn(o, name) ? o[name] : undefined);
+
 async function jobState(job, check) {
   if (typeof check !== 'function') return { name: job.name, reported: false, last_run: null, ok: null };
   try {
@@ -366,9 +430,9 @@ async function answers(dep, { env, check, tcp, fetch: send, now }) {
 /** The read-only health report: only what the declaration lists, each value in a fixed shape. */
 export async function healthReport({ config, env = () => undefined, checks = {}, tcp = null, fetch: send = globalThis.fetch, now = () => Date.now() }) {
   const [jobs, queues, dependencies] = await Promise.all([
-    Promise.all(config.jobs.map((j) => jobState(j, checks.jobs?.[j.name]))),
-    Promise.all(config.queues.map((q) => queueDepth(q, checks.queues?.[q.name]))),
-    Promise.all(config.dependencies.map((d) => answers(d, { env, check: checks.dependencies?.[d.name], tcp, fetch: send, now }))),
+    Promise.all(config.jobs.map((j) => jobState(j, ownOf(checks.jobs, j.name)))),
+    Promise.all(config.queues.map((q) => queueDepth(q, ownOf(checks.queues, q.name)))),
+    Promise.all(config.dependencies.map((d) => answers(d, { env, check: ownOf(checks.dependencies, d.name), tcp, fetch: send, now }))),
   ]);
   return { at: new Date(now()).toISOString(), version: versionOf(env), jobs, queues, dependencies, ...(config.ignored ? { ignored: config.ignored } : {}) };
 }
@@ -433,7 +497,24 @@ export function clockOffWords(skewS) {
 /** The word for a failed check-in, never its text: a URL or an address in an error message stays in the app. */
 const quietWord = (e) => (e?.name === 'AbortError' ? 'timeout' : typeof e?.word === 'string' ? e.word : 'unreachable');
 const escapeHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const randomId = () => toB64url(globalThis.crypto.getRandomValues(new Uint8Array(16)));
+/** The runtime's own random bytes, called on the object that owns them (a bare reference throws "Illegal invocation"), or null. */
+const globalRandom = () => {
+  const c = globalThis.crypto;
+  return c && typeof c.getRandomValues === 'function' ? (bytes) => c.getRandomValues(bytes) : null;
+};
+
+/**
+ * Why this copy will not check in at all, in its one line — or null when it can. Each is said once per copy (tick).
+ * Not the window between check-ins: that is the window working, and says nothing.
+ */
+function cannotCheckIn({ off, config, keys, subtle, getRandomValues, send }) {
+  if (off) return 'switched off (CONTINUAL_OPERATOR=off, or "enabled": false in continual.operator.json), so this copy does not check in';
+  if (!config.appId) return 'continual.operator.json is missing or has no app_id this module can read, so this copy does not check in';
+  if (!keys.length) return 'keys.mjs holds no key, so this copy does not check in';
+  if (typeof send !== 'function') return 'Continual\'s health report needs fetch (Node 18 or later), so this copy does not check in';
+  if (!subtle || typeof getRandomValues !== 'function') return 'Continual\'s health report needs Web Crypto (Node 18 or later), so this copy does not check in';
+  return null;
+}
 
 /** What `hold` answers with, as a fetch Response, for the runtimes that speak Response; undefined to carry on. */
 export function toResponse(held) {
@@ -446,18 +527,50 @@ export function toResponse(held) {
  * app's own code can answer; `hooks`: { maintenance: { on, off }, readonly: { on, off }, features: { name: { off, on } },
  * jobs: { name: fn }, caches: { name: fn } } for the menu, each run only for what the declaration's `menu` lists;
  * `tcp(host, port, ms)`: a connect check where the runtime has sockets; `seen`: a shared nonce store, else this copy's
- * memory; `log(line)`: where the one quiet line goes (console.warn by default).
- * `tick()` is what a framework's wrapper calls on each request: it resolves, never rejects, and does nothing unless this
+ * memory; `log(line)`: where the one quiet line goes (console.warn by default); `subtle` and `getRandomValues`: Web
+ * Crypto, the runtime's global one by default — Node's helpers hand in node:crypto's, which Node 18 keeps off the global
+ * object (1.4.2).
+ * `tick({ host, environment })` is what a framework's wrapper calls on each request, with the request's host (and, where
+ * the platform hands one over, its word for the deployment): it resolves, never rejects, and does nothing unless this
  * copy's window has passed. `hold({ method, accept })` is what it asks before the request goes on: null to carry on, or
- * the maintenance page or read-only answer to serve instead.
+ * the maintenance page or read-only answer to serve instead. `gate({ method, accept })` is `hold` for a caller that can
+ * wait (1.4.3): a promise of the same answer, which for a write that arrives before this copy's first check-in has
+ * finished waits for it (`ready`, READY_MS at most), so a copy that has just started holds read-only mode too.
  */
-export function createOperator({ declared, keys = [], env = () => undefined, checks = {}, hooks = {}, tcp = null, fetch: send = globalThis.fetch, seen = memoryNonces(), subtle = globalThis.crypto?.subtle, now = () => Date.now(), endpoint = CONTINUAL_URL, log = (line) => console.warn(line) } = {}) {
+export function createOperator({ declared, keys = [], env = () => undefined, checks = {}, hooks = {}, tcp = null, fetch: send = globalThis.fetch, seen = memoryNonces(), subtle = globalThis.crypto?.subtle, getRandomValues = globalRandom(), now = () => Date.now(), endpoint = CONTINUAL_URL, log = (line) => console.warn(line) } = {}) {
   const config = readDeclaration(declared);
   const allowed = allowedOps(config);
   const switchedOff = () => !config.enabled || /^(off|false|0|no)$/i.test(String(env('CONTINUAL_OPERATOR') ?? '').trim());
+  const randomId = () => toB64url(getRandomValues(new Uint8Array(16)));
   let last = -Infinity; // when this copy last checked in
+  let said = null; // the reason this copy does not check in, once it has said it: each is said once, not on every request
   let appKey; // undefined: not read yet; null: none in this copy's environment
   const modes = { maintenance: null, readonly: null }; // { until } — this copy's own, held here so each ends on time
+  // 1.4.3: which host this copy's check-in names — the one it served MOST since its last check-in, never simply the
+  // newest: a server that takes any Host header would otherwise let one forged request (`Host: localhost`) just before a
+  // check-in make the copy read as not production, and the menu skip it. Real traffic outweighs a few forged requests.
+  let host = null;
+  let served = new Map(); // host → requests served since the last check-in, HOSTS_KEPT hosts at most
+  const countHost = (h) => {
+    if (!h) return;
+    if (served.has(h)) { served.set(h, served.get(h) + 1); return; }
+    if (served.size < HOSTS_KEPT) { served.set(h, 1); return; }
+    // Full: the least-served host makes room, and the newcomer starts just above it, so a host real traffic keeps
+    // hitting is never pushed out by a stream of different forged ones.
+    let least = null;
+    for (const entry of served) if (!least || entry[1] < least[1]) least = entry;
+    served.delete(least[0]);
+    served.set(h, least[1] + 1);
+  };
+  /** The host served most since the last check-in (the first seen, on a tie); the last check-in's when none was named. */
+  const mostServed = () => {
+    let best = null;
+    for (const entry of served) if (!best || entry[1] > best[1]) best = entry;
+    return best ? best[0] : host;
+  };
+  let deployWord = null; // 1.4.3: the platform's own word for this deployment, where the helper reads one from the request
+  let learned = false; // 1.4.3: this copy's first check-in has finished (answered, or failed): a write no longer waits
+  let learning = null; // 1.4.3: that first check-in while it runs — what a write arriving meanwhile waits on
 
   async function appKeyOf() {
     if (appKey !== undefined) return appKey;
@@ -474,8 +587,8 @@ export function createOperator({ declared, keys = [], env = () => undefined, che
   const untilOf = (mode, t = nowS()) => (modes[mode] && modes[mode].until > t ? modes[mode].until : null);
   const hookOf = (op, name) => {
     const spec = MENU[op];
-    if (spec.list === 'features') return hooks.features?.[name]?.[spec.hook];
-    return hooks[spec.list]?.[name];
+    if (spec.list === 'features') return ownOf(ownOf(hooks.features, name), spec.hook);
+    return ownOf(hooks[spec.list], name); // only a hook registered under exactly that name (L-4)
   };
 
   /** A hook, run with a time limit; its result is never read. 'done', or the word for how it failed. */
@@ -534,14 +647,20 @@ export function createOperator({ declared, keys = [], env = () => undefined, che
   const modesNow = () => ({ maintenance: untilOf('maintenance'), readonly: untilOf('readonly') });
   /** What the declaration lists on the menu, by name: never anything else. */
   const declaredMenu = () => ({ maintenance: !!config.menu.maintenance, readonly: config.menu.readonly?.refuse ?? null, features: config.menu.features, jobs: config.menu.jobs, caches: config.menu.caches });
+  /** 1.4.3: which deployment this copy is — the host it serves and the host's own word for it — so the menu goes to production only. */
+  const deployNow = () => ({ host, env: environmentOf(env, deployWord) });
 
-  /** One check-in: ask, check each instruction, run the allowed ones, report each. Returns what it did. */
-  async function checkIn() {
+  /**
+   * One check-in: ask, check each instruction, run the allowed ones, report each. Returns what it did. A page or mode
+   * runs first, and `held()` is called as soon as this copy holds what the check-in carried for them (1.4.3), so a
+   * write waiting on this copy's first check-in goes on before the reports and the other operations.
+   */
+  async function checkIn(held = () => {}) {
     await lapse();
     const key = await appKeyOf();
     const asking = { app: config.appId, module: MODULE_VERSION, kid: keys[0]?.kid ?? null, kids: keys.map((k) => k.kid).slice(0, 4) };
-    // With the app's key, the check-in is signed, says when and once (at, cnonce), and says what this copy holds.
-    if (key) Object.assign(asking, { akid: key.kid, at: now(), cnonce: randomId(), modes: modesNow(), menu: declaredMenu() });
+    // With the app's key, the check-in is signed, says when and once (at, cnonce), what this copy holds, and which copy it is.
+    if (key) Object.assign(asking, { akid: key.kid, at: now(), cnonce: randomId(), modes: modesNow(), menu: declaredMenu(), deploy: deployNow() });
     const signed = (kind) => (key ? { key, kind } : null);
     const asked = await call(send, `${endpoint}/checkin`, asking, signed('continual-checkin'));
     if (asked.status !== 200) throw Object.assign(new Error('check-in refused'), { word: `answered ${asked.status}` });
@@ -554,8 +673,13 @@ export function createOperator({ declared, keys = [], env = () => undefined, che
       done.push({ refused: 'clock', clock_off_s: off });
     }
     const report = (payload) => call(send, `${endpoint}/report`, { app: config.appId, module: MODULE_VERSION, ...payload }, signed('continual-report'));
-    for (const token of tokens) {
-      const v = await verifyInstruction(token, { appId: config.appId, keys, ops: [...Object.keys(OPERATIONS), ...Object.keys(MENU)], menu: allowed, seen, now: now(), subtle, appKid: key?.kid ?? null, limits });
+    const checked = [];
+    for (const token of tokens) checked.push(await verifyInstruction(token, { appId: config.appId, keys, ops: [...Object.keys(OPERATIONS), ...Object.keys(MENU)], menu: allowed, seen, now: now(), subtle, appKid: key?.kid ?? null, limits }));
+    // 1.4.3: a page or a mode first, so this copy holds them before anything else runs or is reported.
+    const ranFirst = new Map();
+    for (const v of checked) if (v.ok && MENU[v.instruction.op]?.mode) ranFirst.set(v, await runMenu(v.instruction.op, v.instruction.args));
+    held();
+    for (const v of checked) {
       if (!v.ok) {
         // A refusal is reported only when the signature verified, so the nonce is Continual's own.
         if (v.nonce) await report({ nonce: v.nonce, refused: v.reason });
@@ -564,7 +688,7 @@ export function createOperator({ declared, keys = [], env = () => undefined, che
       }
       const { op, nonce, args } = v.instruction;
       if (MENU[op]) {
-        const word = await runMenu(op, args);
+        const word = ranFirst.has(v) ? ranFirst.get(v) : await runMenu(op, args);
         const sent = await report(word === 'done' ? { op, nonce, result: 'done' } : { nonce, refused: word });
         done.push({ op, nonce, result: word, reported: sent.status });
         continue;
@@ -576,18 +700,51 @@ export function createOperator({ declared, keys = [], env = () => undefined, che
     return done;
   }
 
-  /** The wrapper's call on each request. At most once per window in this copy; never rejects; one quiet line on a failure. */
-  function tick() {
+  /**
+   * The wrapper's call on each request, with the request's host (1.4.3). At most once per window in this copy; never
+   * rejects; one quiet line on a failure, and one, once, for each reason this copy does not check in at all
+   * (cannotCheckIn) — never silence. This copy's first check-in is what a write that arrives meanwhile waits on.
+   */
+  function tick(request) {
     try {
-      if (switchedOff() || !config.appId || !keys.length || !subtle || typeof send !== 'function') return Promise.resolve(null);
+      countHost(hostOf(request?.host));
+      if (typeof request?.environment === 'string') deployWord = request.environment;
+      const why = cannotCheckIn({ off: switchedOff(), config, keys, subtle, getRandomValues, send });
+      if (why) {
+        if (said !== why) { said = why; log(`continual-operator: ${why}`); }
+        return Promise.resolve(null);
+      }
+      said = null; // switched back on: a later reason is said again
       const t = now();
       if (t - last < config.checkinMinutes * 60_000) return lapse().then(() => null);
       last = t; // taken before the call, so requests arriving while it runs do not check in again
-      return checkIn().catch((e) => { log(`continual-operator: check-in skipped (${quietWord(e)})`); return null; });
+      host = mostServed(); // this window's most-served host is what the check-in names; the next window counts afresh
+      served = new Map();
+      let settle = () => {};
+      if (!learned && !learning) learning = new Promise((resolve) => { settle = () => { learned = true; resolve(); }; });
+      return checkIn(settle).catch((e) => { log(`continual-operator: check-in skipped (${quietWord(e)})`); return null; })
+        .finally(settle); // answered or not, a write no longer waits on it: an unreachable Continual never stops the app
     } catch (e) {
       log(`continual-operator: check-in skipped (${quietWord(e)})`);
       return Promise.resolve(null);
     }
+  }
+
+  /**
+   * 1.4.3 (M-3): whether this request waits for this copy's first check-in before it is answered — a write, in a copy
+   * holding the app's key whose declaration lists the page or read-only mode, while that first check-in runs.
+   */
+  function waits({ method = 'GET' } = {}) {
+    return !learned && learning !== null && WRITES.has(String(method).toUpperCase()) && !!(config.menu.maintenance || config.menu.readonly)
+      && String(env(APP_KEY_ENV) ?? '').trim() !== '' && !switchedOff();
+  }
+
+  /** 1.4.3: resolves once this copy's first check-in has finished, or after READY_MS, whichever is first. Never rejects. */
+  function ready() {
+    if (learned || !learning) return Promise.resolve();
+    let timer;
+    const late = new Promise((resolve) => { timer = setTimeout(resolve, READY_MS); });
+    return Promise.race([learning, late]).finally(() => clearTimeout(timer));
   }
 
   /**
@@ -608,12 +765,18 @@ export function createOperator({ declared, keys = [], env = () => undefined, che
     const mt = untilOf('maintenance', t);
     if (mt && config.menu.maintenance) return answer('maintenance', mt, config.menu.maintenance.message ?? 'This app is down for maintenance for a short while. Please try again soon.');
     const ro = untilOf('readonly', t);
-    if (ro && config.menu.readonly?.refuse === 'writes' && WRITES.has(String(method).toUpperCase())) return answer('read_only', ro, 'This app is read-only for a short while, so nothing can be saved right now. Please try again soon.');
+    if (ro && config.menu.readonly?.refuse === 'writes' && WRITES.has(String(method).toUpperCase())) return answer('read_only', ro, 'This app is read-only for a short while, so this can\'t be saved right now. Please try again soon.'); // only this save (Q2): never "nothing can be saved"
     return null;
   }
 
+  /** 1.4.3: `hold`, for a caller that can wait — a write on a copy that has just started waits for its first check-in. */
+  function gate(request = {}) {
+    if (!waits(request)) return Promise.resolve(hold(request));
+    return ready().then(() => hold(request));
+  }
+
   return {
-    tick, checkIn, config, hold,
+    tick, checkIn, config, hold, gate, waits, ready,
     /** Whether this copy is in read-only mode now, for an app that refuses writes in its own code. */
     readOnly: () => !switchedOff() && !!untilOf('readonly'),
     /** Whether this copy is showing the maintenance page now. */
